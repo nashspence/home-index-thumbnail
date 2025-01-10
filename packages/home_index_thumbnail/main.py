@@ -28,7 +28,7 @@ import io
 from wand.image import Image as WandImage
 from PIL import Image as PILImage
 from home_index_module import run_server
-from webp import WebPPicture, WebPConfig, WebPAnimEncoder, WebPAnimEncoderOptions
+from webp import WebPPicture, WebPConfig, WebPAnimEncoder
 
 
 # endregion
@@ -39,7 +39,7 @@ VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
 WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
-WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 4))
+WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
 THUMBNAIL_SIZE = int(os.environ.get("THUMBNAIL_SIZE", 150))
 PREVIEW_SIZE = int(os.environ.get("PREVIEW_SIZE", 640))
@@ -100,23 +100,14 @@ def images_to_animated_webp(
 
 
 def extract_10_frames(video_path, num_frames):
-    # 1) Get the duration (in seconds) of the video
     probe_info = ffmpeg.probe(video_path)
     duration = float(probe_info["format"]["duration"])
-
-    # 2) Subtract a small epsilon so we don't land exactly at the end
-    #    but don't let it go below zero in case the video is shorter than epsilon.
     epsilon = 0.01
     safe_duration = max(0, duration - epsilon)
-
-    # 3) Compute 10 timestamps in [0, safe_duration].
-    #    This way our last timestamp is slightly before the true end.
     timestamps = [i * safe_duration / (num_frames - 1) for i in range(num_frames)]
-
     frames = []
 
     def get_frame_at_time(t: float):
-        """Helper: seek to time t and return a single PNG frame (as bytes)."""
         out, _ = (
             ffmpeg.input(video_path, ss=t)
             .output("pipe:", vframes=1, format="image2", vcodec="png")
@@ -124,12 +115,8 @@ def extract_10_frames(video_path, num_frames):
         )
         return out
 
-    # 4) Grab frames for each of the 10 timestamps
     for i, t in enumerate(timestamps):
         out = get_frame_at_time(t)
-
-        # 5) If the last frame is empty, try stepping back a bit more
-        #    (some videos may still fail if they are missing a true last frame).
         if i == num_frames - 1 and len(out) == 0:
             fallback_time = t
             step_back = 0.05  # 50ms increments
@@ -138,26 +125,7 @@ def extract_10_frames(video_path, num_frames):
                 fallback_time -= step_back
                 out = get_frame_at_time(fallback_time)
                 retries -= 1
-
         frames.append(out)
-
-    return frames
-
-
-def split_pngs(png_data):
-    frames = []
-    png_signature = b"\x89PNG\r\n\x1a\n"
-    idx = 0
-    data_len = len(png_data)
-    while idx < data_len:
-        if png_data[idx : idx + 8] == png_signature:
-            start = idx
-            idx += 8
-            while idx < data_len - 8 and png_data[idx : idx + 8] != png_signature:
-                idx += 1
-            frames.append(png_data[start:idx])
-        else:
-            idx += 1
     return frames
 
 
@@ -183,8 +151,7 @@ def create_webp_resize(
     except:
         pass
     try:
-        raw_png_data = extract_10_frames(in_path, frames)
-        png_frames = split_pngs(raw_png_data)
+        png_frames = extract_10_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
             images_to_animated_webp(
@@ -197,9 +164,7 @@ def create_webp_resize(
         pass
 
 
-def create_webp_thumbnail(
-    in_path, out_path, thumb_size=150, frames=10, fps=2, quality=60, method=6
-):
+def create_webp_thumbnail(in_path, out_path, thumb_size, frames, fps, quality, method):
     create_webp_resize(
         in_path,
         out_path,
@@ -212,9 +177,7 @@ def create_webp_thumbnail(
     )
 
 
-def create_webp_preview(
-    in_path, out_path, preview_size=640, frames=10, fps=2, quality=60, method=6
-):
+def create_webp_preview(in_path, out_path, preview_size, frames, fps, quality, method):
     create_webp_resize(
         in_path,
         out_path,
