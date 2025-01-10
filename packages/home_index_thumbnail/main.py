@@ -39,10 +39,10 @@ VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
 WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
-WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 2))
+WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 4))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
 THUMBNAIL_SIZE = int(os.environ.get("THUMBNAIL_SIZE", 150))
-PREVIEW_SIZE = int(os.environ.get("PREVIEW_SIZE", 150))
+PREVIEW_SIZE = int(os.environ.get("PREVIEW_SIZE", 640))
 
 # endregion
 # region "read images"
@@ -79,40 +79,69 @@ def image_to_static_webp(img_bytes, out_file, quality, method):
     c = WebPConfig.new(quality=quality, method=method)
     wpd = pic.encode(c)
     with open(out_file, "wb") as f:
-        f.write(wpd.bytes)
+        f.write(wpd.buffer())
 
 
 def images_to_animated_webp(
     images_bytes, out_file, width, height, fps, quality, method
 ):
-    e = WebPAnimEncoder.new(width, height, WebPAnimEncoderOptions.new())
+    e = WebPAnimEncoder.new(width, height)
     c = WebPConfig.new(quality=quality, method=method)
     frame_duration_ms = int(1000 / fps)
     timestamp = 0
     for frame_bytes in images_bytes:
         pil_img = PILImage.open(io.BytesIO(frame_bytes))
         pic = WebPPicture.from_pil(pil_img)
-        e.add(pic, timestamp, c)
+        e.encode_frame(pic, timestamp, c)
         timestamp += frame_duration_ms
-    wpd = e.assemble()
+    wpd = e.assemble(timestamp)
     with open(out_file, "wb") as f:
-        f.write(wpd.bytes)
+        f.write(wpd.buffer())
 
 
-def capture_frames(video_path, frame_count):
+def extract_10_frames(video_path, num_frames):
+    # 1) Get the duration (in seconds) of the video
     probe_info = ffmpeg.probe(video_path)
-    video_stream = next(x for x in probe_info["streams"] if x["codec_type"] == "video")
-    total_frames = int(video_stream["nb_frames"])
-    stride = max(total_frames // frame_count, 1)
-    out, _ = (
-        ffmpeg.input(video_path)
-        .filter_("select", f"not(mod(n,{stride}))")
-        .output(
-            "pipe:", vcodec="png", format="image2pipe", vframes=frame_count, vsync="vfr"
+    duration = float(probe_info["format"]["duration"])
+
+    # 2) Subtract a small epsilon so we don't land exactly at the end
+    #    but don't let it go below zero in case the video is shorter than epsilon.
+    epsilon = 0.01
+    safe_duration = max(0, duration - epsilon)
+
+    # 3) Compute 10 timestamps in [0, safe_duration].
+    #    This way our last timestamp is slightly before the true end.
+    timestamps = [i * safe_duration / (num_frames - 1) for i in range(num_frames)]
+
+    frames = []
+
+    def get_frame_at_time(t: float):
+        """Helper: seek to time t and return a single PNG frame (as bytes)."""
+        out, _ = (
+            ffmpeg.input(video_path, ss=t)
+            .output("pipe:", vframes=1, format="image2", vcodec="png")
+            .run(capture_stdout=True, capture_stderr=True)
         )
-        .run(capture_stdout=True, capture_stderr=True)
-    )
-    return out
+        return out
+
+    # 4) Grab frames for each of the 10 timestamps
+    for i, t in enumerate(timestamps):
+        out = get_frame_at_time(t)
+
+        # 5) If the last frame is empty, try stepping back a bit more
+        #    (some videos may still fail if they are missing a true last frame).
+        if i == num_frames - 1 and len(out) == 0:
+            fallback_time = t
+            step_back = 0.05  # 50ms increments
+            retries = 10  # Try stepping back up to 10 times
+            while len(out) == 0 and fallback_time > 0 and retries > 0:
+                fallback_time -= step_back
+                out = get_frame_at_time(fallback_time)
+                retries -= 1
+
+        frames.append(out)
+
+    return frames
 
 
 def split_pngs(png_data):
@@ -154,7 +183,7 @@ def create_webp_resize(
     except:
         pass
     try:
-        raw_png_data = capture_frames(in_path, frames)
+        raw_png_data = extract_10_frames(in_path, frames)
         png_frames = split_pngs(raw_png_data)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]

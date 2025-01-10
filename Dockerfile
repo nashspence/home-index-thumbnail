@@ -1,4 +1,4 @@
-FROM python/slim:latest
+FROM python:slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
