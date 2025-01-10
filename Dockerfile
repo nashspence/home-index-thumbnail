@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:latest
+FROM python/slim:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     dcraw \
     libraw-bin \
     ghostscript \
+    ffmpeg \
+    cwebp \
     && apt-get clean
 
 WORKDIR /app

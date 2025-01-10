@@ -1,4 +1,6 @@
 git+https://github.com/nashspence/home-index.git
 debugpy
-easyocr
 wand
+webp
+ffmpeg-python
+pillow
