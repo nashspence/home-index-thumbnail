@@ -140,27 +140,23 @@ def create_webp_resize(
                     with WandImage(image=frame) as fr:
                         fr_bytes = fr.make_blob("PNG")
                         frames_bytes.append(resize_func(fr_bytes, size))
-                images_to_animated_webp(
-                    frames_bytes, out_path, size, size, fps, quality, method
-                )
+                images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
             else:
                 single_png = im.make_blob("PNG")
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
         return
-    except:
+    except Exception as e:
         pass
     try:
         png_frames = extract_10_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
-            images_to_animated_webp(
-                frames_bytes, out_path, size, size, fps, quality, method
-            )
+            images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
         elif len(png_frames) == 1:
             resized_png = resize_func(png_frames[0], size)
             image_to_static_webp(resized_png, out_path, quality, method)
-    except:
+    except Exception as e:
         pass
 
 
