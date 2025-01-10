@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     libraw-bin \
     ghostscript \
     ffmpeg \
-    cwebp \
+    webp \
     && apt-get clean
 
 WORKDIR /app
