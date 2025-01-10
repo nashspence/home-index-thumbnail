@@ -1,0 +1,41 @@
+services:
+  home-index-thumbnail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: home-index-thumbnail
+    environment:
+      - DEBUG=True
+      - TZ=America/Los_Angeles
+      - WAIT_FOR_DEBUGPY_CLIENT=True
+    ports:
+      - '5678:5678' # debugpy
+    restart: unless-stopped
+    volumes:
+      - ./bind-mounts/files:/files
+  meilisearch:
+    container_name: meilisearch
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - TZ=America/Los_Angeles
+    image: getmeili/meilisearch:latest
+    restart: unless-stopped
+    volumes:
+      - ./bind-mounts/meilisearch:/meili_data
+  home-index:
+    build:
+      context: https://github.com/nashspence/home-index.git
+      dockerfile: Dockerfile
+    container_name: home-index
+    depends_on:
+      - meilisearch
+      - home-index-thumbnail
+    environment:
+      - DEBUG=True
+      - MODULES=http://home-index-thumbnail:9000
+      - MEILISEARCH_HOST=http://meilisearch:7700
+      - TZ=America/Los_Angeles
+    restart: unless-stopped
+    volumes:
+      - ./bind-mounts/home-index:/home-index
+      - ./bind-mounts/files:/files

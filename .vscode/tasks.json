@@ -1,0 +1,24 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Restart Docker Container",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "docker-compose down && docker-compose build && WAIT_FOR_DEBUGPY_CLIENT=True docker-compose up -d && sleep 3"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Stop Docker Compose",
+            "type": "shell",
+            "command": "docker-compose down",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always"
+            }
+        }
+    ]
+}

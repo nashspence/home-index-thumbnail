@@ -1,0 +1,8 @@
+.env
+/bind-mounts/home-index
+/bind-mounts/files/metadata
+/bind-mounts/home-index-thumbnail
+/bind-mounts/meilisearch
+docker-compose.override*.yml
+docker-data
+venv
