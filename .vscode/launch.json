@@ -16,7 +16,8 @@
                 }
             ],
             "preLaunchTask": "Restart Docker Container",
-            "postDebugTask": "Stop Docker Compose"
+            "postDebugTask": "Stop Docker Compose",
+            "justMyCode": false
         }
     ]
 }

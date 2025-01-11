@@ -50,18 +50,22 @@ PREVIEW_SIZE = int(os.environ.get("PREVIEW_SIZE", 640))
 
 def resize_image_bytes_maintain_aspect(img_bytes, max_dimension):
     with WandImage(blob=img_bytes) as img:
+        img.auto_orient()
         width, height = img.width, img.height
         largest_side = max(width, height)
+        new_width = None
+        new_height = None
         if largest_side > max_dimension:
             ratio = max_dimension / float(largest_side)
             new_width = int(width * ratio)
             new_height = int(height * ratio)
             img.resize(new_width, new_height)
-        return img.make_blob("PNG")
+        return img.make_blob("PNG"), new_width, new_height
 
 
 def resize_image_bytes_center_crop_square(img_bytes, size):
     with WandImage(blob=img_bytes) as img:
+        img.auto_orient()
         width, height = img.width, img.height
         if width > height:
             offset = (width - height) // 2
@@ -70,28 +74,39 @@ def resize_image_bytes_center_crop_square(img_bytes, size):
             offset = (height - width) // 2
             img.crop(left=0, top=offset, width=width, height=width)
         img.resize(size, size)
-        return img.make_blob("PNG")
+        return img.make_blob("PNG"), size, size
 
 
 def image_to_static_webp(img_bytes, out_file, quality, method):
-    pil_img = PILImage.open(io.BytesIO(img_bytes))
-    pic = WebPPicture.from_pil(pil_img)
+    b, w, h = img_bytes
+    pil_img = PILImage.open(io.BytesIO(b))
+    pic = WebPPicture.new(w, h).from_pil(
+        PILImage.alpha_composite(
+            PILImage.new("RGBA", pil_img.size, (255, 255, 255, 255)),
+            pil_img.convert("RGBA"),
+        )
+    )
     c = WebPConfig.new(quality=quality, method=method)
     wpd = pic.encode(c)
     with open(out_file, "wb") as f:
         f.write(wpd.buffer())
 
 
-def images_to_animated_webp(
-    images_bytes, out_file, width, height, fps, quality, method
-):
-    e = WebPAnimEncoder.new(width, height)
+def images_to_animated_webp(images_bytes, out_file, fps, quality, method):
+    _, w, h = images_bytes[0]
+    e = WebPAnimEncoder.new(w, h)
     c = WebPConfig.new(quality=quality, method=method)
     frame_duration_ms = int(1000 / fps)
     timestamp = 0
     for frame_bytes in images_bytes:
-        pil_img = PILImage.open(io.BytesIO(frame_bytes))
-        pic = WebPPicture.from_pil(pil_img)
+        b, _, _ = frame_bytes
+        pil_img = PILImage.open(io.BytesIO(b))
+        pic = WebPPicture.from_pil(
+            PILImage.alpha_composite(
+                PILImage.new("RGBA", pil_img.size, (255, 255, 255, 255)),
+                pil_img.convert("RGBA"),
+            )
+        )
         e.encode_frame(pic, timestamp, c)
         timestamp += frame_duration_ms
     wpd = e.assemble(timestamp)
@@ -130,10 +145,11 @@ def extract_10_frames(video_path, num_frames):
 
 
 def create_webp_resize(
-    in_path, out_path, frames, fps, quality, size, method, resize_func
+    mimetype, in_path, out_path, frames, fps, quality, size, method, resize_func
 ):
-    try:
+    if not mimetype.startswith("video/"):
         with WandImage(filename=in_path) as im:
+            im.auto_orient()
             if len(im.sequence) > 1:
                 frames_bytes = []
                 for frame in im.sequence:
@@ -145,10 +161,7 @@ def create_webp_resize(
                 single_png = im.make_blob("PNG")
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
-        return
-    except Exception as e:
-        pass
-    try:
+    else:
         png_frames = extract_10_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
@@ -156,12 +169,13 @@ def create_webp_resize(
         elif len(png_frames) == 1:
             resized_png = resize_func(png_frames[0], size)
             image_to_static_webp(resized_png, out_path, quality, method)
-    except Exception as e:
-        pass
 
 
-def create_webp_thumbnail(in_path, out_path, thumb_size, frames, fps, quality, method):
+def create_webp_thumbnail(
+    mimetype, in_path, out_path, thumb_size, frames, fps, quality, method
+):
     create_webp_resize(
+        mimetype,
         in_path,
         out_path,
         frames,
@@ -173,8 +187,11 @@ def create_webp_thumbnail(in_path, out_path, thumb_size, frames, fps, quality, m
     )
 
 
-def create_webp_preview(in_path, out_path, preview_size, frames, fps, quality, method):
+def create_webp_preview(
+    mimetype, in_path, out_path, preview_size, frames, fps, quality, method
+):
     create_webp_resize(
+        mimetype,
         in_path,
         out_path,
         frames,
@@ -212,15 +229,16 @@ def check(file_path, document, metadata_dir_path):
 
     if version and version["version"] == VERSION:
         return False
+
     try:
-        with WandImage(filename=file_path):
-            return True
-    except Exception:
-        try:
+        if not document["type"].startswith("video/"):
+            with WandImage(filename=file_path):
+                return True
+        else:
             ffmpeg.probe(file_path)
             return True
-        except Exception:
-            return False
+    except Exception:
+        return False
 
 
 def run(file_path, document, metadata_dir_path):
@@ -234,6 +252,7 @@ def run(file_path, document, metadata_dir_path):
     exception = None
     try:
         create_webp_thumbnail(
+            document["type"],
             file_path,
             thumbnail_path,
             thumb_size=THUMBNAIL_SIZE,
@@ -243,6 +262,7 @@ def run(file_path, document, metadata_dir_path):
             fps=WEBP_ANIMATION_FPS,
         )
         create_webp_preview(
+            document["type"],
             file_path,
             preview_path,
             preview_size=PREVIEW_SIZE,
