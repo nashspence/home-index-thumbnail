@@ -230,12 +230,14 @@ def check(file_path, document, metadata_dir_path):
     if version and version["version"] == VERSION:
         return False
 
+    if document["type"].startswith("audio/"):
+        return False
+
+    if document["type"].startswith("video/"):
+        return True
+
     try:
-        if not document["type"].startswith("video/"):
-            with WandImage(filename=file_path):
-                return True
-        else:
-            ffmpeg.probe(file_path)
+        with WandImage(filename=file_path):
             return True
     except Exception:
         return False
