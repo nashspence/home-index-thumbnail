@@ -39,7 +39,7 @@ from webp import WebPPicture, WebPConfig, WebPAnimEncoder
 
 VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
-WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
+WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 3))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
 WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
@@ -116,7 +116,7 @@ def images_to_animated_webp(images_bytes, out_file, fps, quality, method):
         f.write(wpd.buffer())
 
 
-def extract_10_frames(video_path, num_frames):
+def extract_partitioned_frames(video_path, num_frames):
     probe_info = ffmpeg.probe(video_path)
     duration = float(probe_info["format"]["duration"])
     epsilon = 0.01
@@ -146,6 +146,95 @@ def extract_10_frames(video_path, num_frames):
     return frames
 
 
+def extract_keyframes(video_path, num_frames=10):
+    command = [
+        "ffprobe",
+        "-skip_frame",
+        "nokey",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "frame=pts_time",
+        "-print_format",
+        "json",
+        video_path,
+    ]
+    result = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    frame_data = json.loads(result.stdout)
+    frames = sorted(
+        [float(frame["pts_time"]) for frame in frame_data.get("frames", [])]
+    )
+    keyframe_count = len(frames)
+    if keyframe_count == 0:
+        raise ValueError("no keyframes in video")
+    if keyframe_count <= num_frames:
+        num_frames = keyframe_count
+        chosen = range(num_frames)
+    else:
+        step = len(frames) / num_frames
+        chosen = [int(i * step) for i in range(num_frames)]
+    exprs = [f"eq(n\\,{c})" for c in chosen]
+    select_expr = "+".join(exprs)
+
+    cmd = [
+        "ffmpeg",
+        "-skip_frame",
+        "nokey",
+        "-i",
+        video_path,
+        "-vf",
+        f"select={select_expr}",
+        "-frames:v",
+        str(num_frames),
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "pipe:",
+    ]
+
+    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    frames_data = []
+    while True:
+        signature = pipe.stdout.read(8)
+        if not signature:
+            break
+        if len(signature) < 8 or signature[:4] != b"\x89PNG":
+            break
+        chunk_data = bytearray(signature)
+        while True:
+            length_bytes = pipe.stdout.read(4)
+            if len(length_bytes) < 4:
+                break
+            chunk_data.extend(length_bytes)
+            length = int.from_bytes(length_bytes, "big")
+            chunk_type = pipe.stdout.read(4)
+            if len(chunk_type) < 4:
+                break
+            chunk_data.extend(chunk_type)
+            chunk_payload = pipe.stdout.read(length + 4)
+            if len(chunk_payload) < length + 4:
+                break
+            chunk_data.extend(chunk_payload)
+            if chunk_type == b"IEND":
+                break
+        frames_data.append(bytes(chunk_data))
+        if len(frames_data) >= num_frames:
+            break
+    pipe.stdout.close()
+    stderr_output = pipe.stderr.read()
+    pipe.stderr.close()
+    pipe.wait()
+
+    if stderr_output:
+        logging.debug(stderr_output.decode().strip())
+
+    return frames_data
+
+
 def create_webp_resize(
     mimetype, in_path, out_path, frames, fps, quality, size, method, resize_func
 ):
@@ -164,7 +253,15 @@ def create_webp_resize(
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
     else:
-        png_frames = extract_10_frames(in_path, frames)
+        try:
+            png_frames = extract_keyframes(in_path, frames)
+        except Exception as e:
+            png_frames = []
+            logging.warning(
+                f'failed to extract keyframes because "{str(e)}", trying full-decode frame extraction.'
+            )
+        if not png_frames:
+            png_frames = extract_partitioned_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
             images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
