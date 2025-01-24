@@ -39,7 +39,7 @@ from webp import WebPPicture, WebPConfig, WebPAnimEncoder
 
 VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
-WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 3))
+WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
 WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
