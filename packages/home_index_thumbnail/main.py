@@ -39,7 +39,7 @@ from webp import WebPPicture, WebPConfig, WebPAnimEncoder
 
 VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
-WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
+WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 3))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
 WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
@@ -230,7 +230,7 @@ def extract_keyframes(video_path, num_frames=10):
     pipe.wait()
 
     if stderr_output:
-        logging.debug(stderr_output.decode().strip())
+        logging.info(stderr_output.decode().strip())
 
     return frames_data
 
@@ -253,7 +253,15 @@ def create_webp_resize(
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
     else:
-        png_frames = extract_partitioned_frames(in_path, frames)
+        try:
+            png_frames = extract_keyframes(in_path, frames)
+        except Exception as e:
+            png_frames = []
+            logging.warning(
+                f'failed to extract keyframes because "{str(e)}", trying full-decode frame extraction.'
+            )
+        if not png_frames:
+            png_frames = extract_partitioned_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
             images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
