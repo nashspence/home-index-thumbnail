@@ -146,14 +146,7 @@ def extract_partitioned_frames(video_path, num_frames):
     return frames
 
 
-import subprocess
-import json
-import logging
-
-
 class FFmpegError(Exception):
-    """Custom exception for FFmpeg-related errors."""
-
     pass
 
 
