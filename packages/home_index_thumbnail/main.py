@@ -253,15 +253,7 @@ def create_webp_resize(
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
     else:
-        try:
-            png_frames = extract_keyframes(in_path, frames)
-        except Exception as e:
-            png_frames = []
-            logging.warning(
-                f'failed to extract keyframes because "{str(e)}", trying full-decode frame extraction.'
-            )
-        if not png_frames:
-            png_frames = extract_partitioned_frames(in_path, frames)
+        png_frames = extract_partitioned_frames(in_path, frames)
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
             images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
