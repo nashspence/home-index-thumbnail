@@ -26,7 +26,9 @@ import os
 import io
 import subprocess
 import mimetypes
+import threading
 
+from queue import Queue, Empty
 from wand.image import Image as WandImage
 from PIL import Image as PILImage
 from home_index_module import run_server
@@ -150,6 +152,12 @@ class FFmpegError(Exception):
     pass
 
 
+def read_stream(stream, queue):
+    for line in iter(stream.readline, b""):
+        queue.put(line)
+    stream.close()
+
+
 def extract_keyframes(video_path, num_frames=10):
     # Run ffprobe to get keyframe times
     command = [
@@ -165,7 +173,7 @@ def extract_keyframes(video_path, num_frames=10):
         video_path,
     ]
     result = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
     )
 
     if result.returncode != 0:
@@ -211,47 +219,60 @@ def extract_keyframes(video_path, num_frames=10):
         "pipe:",
     ]
 
-    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pipe = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**6
+    )
+
+    stderr_queue = Queue()
+    stderr_thread = threading.Thread(
+        target=read_stream, args=(pipe.stderr, stderr_queue)
+    )
+    stderr_thread.start()
+
     frames_data = []
-    while True:
-        signature = pipe.stdout.read(8)
-        if not signature:
-            break
-        if len(signature) < 8 or signature[:4] != b"\x89PNG":
-            break
-        chunk_data = bytearray(signature)
+    try:
         while True:
-            length_bytes = pipe.stdout.read(4)
-            if len(length_bytes) < 4:
+            signature = pipe.stdout.read(8)
+            if not signature:
                 break
-            chunk_data.extend(length_bytes)
-            length = int.from_bytes(length_bytes, "big")
-            chunk_type = pipe.stdout.read(4)
-            if len(chunk_type) < 4:
+            if len(signature) < 8 or signature[:4] != b"\x89PNG":
                 break
-            chunk_data.extend(chunk_type)
-            chunk_payload = pipe.stdout.read(length + 4)
-            if len(chunk_payload) < length + 4:
+            chunk_data = bytearray(signature)
+            while True:
+                length_bytes = pipe.stdout.read(4)
+                if len(length_bytes) < 4:
+                    break
+                chunk_data.extend(length_bytes)
+                length = int.from_bytes(length_bytes, "big")
+                chunk_type = pipe.stdout.read(4)
+                if len(chunk_type) < 4:
+                    break
+                chunk_data.extend(chunk_type)
+                chunk_payload = pipe.stdout.read(length + 4)
+                if len(chunk_payload) < length + 4:
+                    break
+                chunk_data.extend(chunk_payload)
+                if chunk_type == b"IEND":
+                    break
+            frames_data.append(bytes(chunk_data))
+            if len(frames_data) >= num_frames:
                 break
-            chunk_data.extend(chunk_payload)
-            if chunk_type == b"IEND":
-                break
-        frames_data.append(bytes(chunk_data))
-        if len(frames_data) >= num_frames:
-            break
 
-    pipe.stdout.close()
-    stderr_output = pipe.stderr.read()
-    pipe.stderr.close()
-    return_code = pipe.wait()
+        pipe.stdout.close()
+        pipe.wait()
 
-    if stderr_output:
-        logging.info(stderr_output.decode().strip())
+        if pipe.returncode != 0:
+            stderr_output = "\n".join(
+                [line.decode().strip() for line in list(stderr_queue.queue)]
+            )
+            raise FFmpegError(
+                f"ffmpeg failed with exit code {pipe.returncode}. Error output:\n{stderr_output}"
+            )
 
-    if return_code != 0:
-        raise FFmpegError(
-            f"ffmpeg failed with exit code {return_code}. Error output:\n{stderr_output.decode().strip()}"
-        )
+    finally:
+        pipe.stdout.close()
+        pipe.stderr.close()
+        stderr_thread.join()
 
     return frames_data
 
