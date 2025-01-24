@@ -146,7 +146,19 @@ def extract_partitioned_frames(video_path, num_frames):
     return frames
 
 
+import subprocess
+import json
+import logging
+
+
+class FFmpegError(Exception):
+    """Custom exception for FFmpeg-related errors."""
+
+    pass
+
+
 def extract_keyframes(video_path, num_frames=10):
+    # Run ffprobe to get keyframe times
     command = [
         "ffprobe",
         "-skip_frame",
@@ -162,13 +174,23 @@ def extract_keyframes(video_path, num_frames=10):
     result = subprocess.run(
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
-    frame_data = json.loads(result.stdout)
+
+    if result.returncode != 0:
+        raise FFmpegError(
+            f"ffprobe failed with exit code {result.returncode}. Error output:\n{result.stderr.strip()}"
+        )
+
+    try:
+        frame_data = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise ValueError("Failed to parse ffprobe output as JSON") from e
+
     frames = sorted(
         [float(frame["pts_time"]) for frame in frame_data.get("frames", [])]
     )
     keyframe_count = len(frames)
     if keyframe_count == 0:
-        raise ValueError("no keyframes in video")
+        raise ValueError("No keyframes in video")
     if keyframe_count <= num_frames:
         num_frames = keyframe_count
         chosen = range(num_frames)
@@ -178,6 +200,7 @@ def extract_keyframes(video_path, num_frames=10):
     exprs = [f"eq(n\\,{c})" for c in chosen]
     select_expr = "+".join(exprs)
 
+    # Run ffmpeg to extract frames
     cmd = [
         "ffmpeg",
         "-skip_frame",
@@ -196,7 +219,6 @@ def extract_keyframes(video_path, num_frames=10):
     ]
 
     pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
     frames_data = []
     while True:
         signature = pipe.stdout.read(8)
@@ -224,13 +246,19 @@ def extract_keyframes(video_path, num_frames=10):
         frames_data.append(bytes(chunk_data))
         if len(frames_data) >= num_frames:
             break
+
     pipe.stdout.close()
     stderr_output = pipe.stderr.read()
     pipe.stderr.close()
-    pipe.wait()
+    return_code = pipe.wait()
 
     if stderr_output:
         logging.info(stderr_output.decode().strip())
+
+    if return_code != 0:
+        raise FFmpegError(
+            f"ffmpeg failed with exit code {return_code}. Error output:\n{stderr_output.decode().strip()}"
+        )
 
     return frames_data
 
