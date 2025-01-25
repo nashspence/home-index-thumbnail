@@ -39,7 +39,7 @@ from webp import WebPPicture, WebPConfig, WebPAnimEncoder
 
 VERSION = 1
 NAME = os.environ.get("NAME", "thumbnail")
-WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 3))
+WEBP_METHOD = int(os.environ.get("WEBP_METHOD", 6))
 WEBP_QUALITY = int(os.environ.get("WEBP_QUALITY", 60))
 WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
@@ -260,7 +260,9 @@ def create_webp_resize(
     mimetype, in_path, out_path, frames, fps, quality, size, method, resize_func
 ):
     if not mimetype.startswith("video/"):
+        logging.info(f"open image with wand")
         with WandImage(filename=in_path) as im:
+            logging.info(f"create webp")
             im.auto_orient()
             if len(im.sequence) > 1:
                 frames_bytes = []
@@ -274,7 +276,9 @@ def create_webp_resize(
                 resized_png = resize_func(single_png, size)
                 image_to_static_webp(resized_png, out_path, quality, method)
     else:
+        logging.info(f"extract frames from video")
         png_frames = extract_partitioned_frames(in_path, frames)
+        logging.info(f"create webp")
         if len(png_frames) > 1:
             frames_bytes = [resize_func(p, size) for p in png_frames]
             images_to_animated_webp(frames_bytes, out_path, fps, quality, method)
@@ -394,6 +398,7 @@ def run(file_path, document, metadata_dir_path):
 
     exception = None
     try:
+        logging.info(f"create thumbnail")
         create_webp_thumbnail(
             document["type"],
             file_path,
@@ -404,6 +409,7 @@ def run(file_path, document, metadata_dir_path):
             frames=WEBP_ANIMATION_FRAMES,
             fps=WEBP_ANIMATION_FPS,
         )
+        logging.info(f"create preview")
         create_webp_preview(
             document["type"],
             file_path,
