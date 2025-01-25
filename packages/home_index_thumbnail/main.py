@@ -26,6 +26,7 @@ import os
 import io
 import subprocess
 import mimetypes
+import threading
 
 from wand.image import Image as WandImage
 from PIL import Image as PILImage
@@ -146,116 +147,6 @@ def extract_partitioned_frames(video_path, num_frames):
     return frames
 
 
-class FFmpegError(Exception):
-    pass
-
-
-def extract_keyframes(video_path, num_frames=10):
-    # Run ffprobe to get keyframe times
-    command = [
-        "ffprobe",
-        "-skip_frame",
-        "nokey",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "frame=pts_time",
-        "-print_format",
-        "json",
-        video_path,
-    ]
-    result = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-
-    if result.returncode != 0:
-        raise FFmpegError(
-            f"ffprobe failed with exit code {result.returncode}. Error output:\n{result.stderr.strip()}"
-        )
-
-    try:
-        frame_data = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise ValueError("Failed to parse ffprobe output as JSON") from e
-
-    frames = sorted(
-        [float(frame["pts_time"]) for frame in frame_data.get("frames", [])]
-    )
-    keyframe_count = len(frames)
-    if keyframe_count == 0:
-        raise ValueError("No keyframes in video")
-    if keyframe_count <= num_frames:
-        num_frames = keyframe_count
-        chosen = range(num_frames)
-    else:
-        step = len(frames) / num_frames
-        chosen = [int(i * step) for i in range(num_frames)]
-    exprs = [f"eq(n\\,{c})" for c in chosen]
-    select_expr = "+".join(exprs)
-
-    # Run ffmpeg to extract frames
-    cmd = [
-        "ffmpeg",
-        "-skip_frame",
-        "nokey",
-        "-i",
-        video_path,
-        "-vf",
-        f"select={select_expr}",
-        "-frames:v",
-        str(num_frames),
-        "-f",
-        "image2pipe",
-        "-vcodec",
-        "png",
-        "pipe:",
-    ]
-
-    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    frames_data = []
-    while True:
-        signature = pipe.stdout.read(8)
-        if not signature:
-            break
-        if len(signature) < 8 or signature[:4] != b"\x89PNG":
-            break
-        chunk_data = bytearray(signature)
-        while True:
-            length_bytes = pipe.stdout.read(4)
-            if len(length_bytes) < 4:
-                break
-            chunk_data.extend(length_bytes)
-            length = int.from_bytes(length_bytes, "big")
-            chunk_type = pipe.stdout.read(4)
-            if len(chunk_type) < 4:
-                break
-            chunk_data.extend(chunk_type)
-            chunk_payload = pipe.stdout.read(length + 4)
-            if len(chunk_payload) < length + 4:
-                break
-            chunk_data.extend(chunk_payload)
-            if chunk_type == b"IEND":
-                break
-        frames_data.append(bytes(chunk_data))
-        if len(frames_data) >= num_frames:
-            break
-
-    pipe.stdout.close()
-    stderr_output = pipe.stderr.read()
-    pipe.stderr.close()
-    return_code = pipe.wait()
-
-    if stderr_output:
-        logging.info(stderr_output.decode().strip())
-
-    if return_code != 0:
-        raise FFmpegError(
-            f"ffmpeg failed with exit code {return_code}. Error output:\n{stderr_output.decode().strip()}"
-        )
-
-    return frames_data
-
-
 def create_webp_resize(
     mimetype, in_path, out_path, frames, fps, quality, size, method, resize_func
 ):
@@ -287,36 +178,52 @@ def create_webp_resize(
             image_to_static_webp(resized_png, out_path, quality, method)
 
 
-def create_webp_thumbnail(
-    mimetype, in_path, out_path, thumb_size, frames, fps, quality, method
+def create_webps(
+    mimetype,
+    in_path,
+    transform_specs,
+    frames,
+    fps,
+    quality,
+    method,
 ):
-    create_webp_resize(
-        mimetype,
-        in_path,
-        out_path,
-        frames,
-        fps,
-        quality,
-        thumb_size,
-        method,
-        resize_image_bytes_center_crop_square,
-    )
+    if not mimetype.startswith("video/"):
+        with WandImage(filename=in_path) as im:
+            im.auto_orient()
+            if len(im.sequence) > 1:
+                frames_data = []
+                for frame in im.sequence:
+                    with WandImage(image=frame) as fr:
+                        frames_data.append(fr.make_blob("PNG"))
+            else:
+                frames_data = [im.make_blob("PNG")]
+    else:
+        frames_data = extract_partitioned_frames(in_path, frames)
 
+    def process_transform_spec(spec):
+        discriminator, out_path, dimension = spec
+        if discriminator == "crop_to_center_square":
+            resize_func = resize_image_bytes_center_crop_square
+        elif discriminator == "resize_to_max_dimension":
+            resize_func = resize_image_bytes_maintain_aspect
+        else:
+            raise ValueError(f"Unknown discriminator: {discriminator}")
 
-def create_webp_preview(
-    mimetype, in_path, out_path, preview_size, frames, fps, quality, method
-):
-    create_webp_resize(
-        mimetype,
-        in_path,
-        out_path,
-        frames,
-        fps,
-        quality,
-        preview_size,
-        method,
-        resize_image_bytes_maintain_aspect,
-    )
+        if len(frames_data) > 1:
+            resized_frames = [resize_func(frame, dimension) for frame in frames_data]
+            images_to_animated_webp(resized_frames, out_path, fps, quality, method)
+        else:
+            resized_png = resize_func(frames_data[0], dimension)
+            image_to_static_webp(resized_png, out_path, quality, method)
+
+    threads = []
+    for spec in transform_specs:
+        t = threading.Thread(target=process_transform_spec, args=(spec,))
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
 
 
 # endregion
@@ -398,27 +305,17 @@ def run(file_path, document, metadata_dir_path):
 
     exception = None
     try:
-        logging.info(f"create thumbnail")
-        create_webp_thumbnail(
+        create_webps(
             document["type"],
             file_path,
-            thumbnail_path,
-            thumb_size=THUMBNAIL_SIZE,
-            quality=WEBP_QUALITY,
-            method=WEBP_METHOD,
+            [
+                ("crop_to_center_square", thumbnail_path, THUMBNAIL_SIZE),
+                ("resize_to_max_dimension", preview_path, PREVIEW_SIZE),
+            ],
             frames=WEBP_ANIMATION_FRAMES,
             fps=WEBP_ANIMATION_FPS,
-        )
-        logging.info(f"create preview")
-        create_webp_preview(
-            document["type"],
-            file_path,
-            preview_path,
-            preview_size=PREVIEW_SIZE,
             quality=WEBP_QUALITY,
             method=WEBP_METHOD,
-            frames=WEBP_ANIMATION_FRAMES,
-            fps=WEBP_ANIMATION_FPS,
         )
     except FileNotFoundError as e:
         raise e
