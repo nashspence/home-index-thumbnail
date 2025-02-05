@@ -30,6 +30,7 @@ services:
     volumes:
       - ./bind-mounts/files:/files
       - ./bind-mounts/home-index-thumbnail/imagemagick/policy.xml:/etc/ImageMagick-6/policy.xml
+      - ./bind-mounts/home-index-thumbnail:/config
   meilisearch:
     container_name: meilisearch
     environment:

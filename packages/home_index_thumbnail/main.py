@@ -27,6 +27,7 @@ import io
 import subprocess
 import mimetypes
 import threading
+import pathlib
 
 from wand.image import Image as WandImage
 from PIL import Image as PILImage
@@ -46,6 +47,10 @@ WEBP_ANIMATION_FPS = int(os.environ.get("WEBP_ANIMATION_FPS", 1))
 WEBP_ANIMATION_FRAMES = int(os.environ.get("WEBP_ANIMATION_FRAMES", 10))
 THUMBNAIL_SIZE = int(os.environ.get("THUMBNAIL_SIZE", 150))
 PREVIEW_SIZE = int(os.environ.get("PREVIEW_SIZE", 640))
+RETRY_FILE = pathlib.Path("/config/retry")
+if not RETRY_FILE.exists():
+    RETRY_FILE.write_text("0")
+
 
 # endregion
 # region "read images"
@@ -276,20 +281,40 @@ def can_wand_open(mime_type):
     return False
 
 
-def check(file_path, document, metadata_dir_path):
+def load_version(metadata_dir_path):
     version_path = metadata_dir_path / "version.json"
-    version = None
-
     if version_path.exists():
-        with open(version_path, "r") as file:
-            version = json.load(file)
+        with open(version_path) as f:
+            return json.load(f)
+    return {}
 
-    if version and version.get("version") == VERSION:
+
+def load_retry_count():
+    if RETRY_FILE.exists():
+        with open(RETRY_FILE) as rf:
+            return int(rf.read().strip())
+    return 0
+
+
+def get_exceptions_array(version):
+    if "exceptions" in version:
+        return version["exceptions"]
+    # this check can be removed once all have rerun
+    if "exception" in version:
+        return [version["exception"]]
+    return []
+
+
+def check(file_path, document, metadata_dir_path):
+    version = load_version(metadata_dir_path)
+    if version.get("version") == VERSION:
+        n = load_retry_count()
+        e = get_exceptions_array(version)
+        if len(e) > 0 and len(e) <= n:
+            return True
         return False
 
-    if document["type"].startswith("audio/") or document["type"].startswith(
-        "multipart/appledouble"
-    ):
+    if document["type"].startswith("audio/"):
         return False
 
     return can_wand_open(document["type"])
@@ -323,8 +348,20 @@ def run(file_path, document, metadata_dir_path):
         exception = e
         logging.exception("failed")
 
-    with open(version_path, "w") as file:
-        json.dump({"version": VERSION, "exception": str(exception)}, file, indent=4)
+    version = load_version(metadata_dir_path)
+    version["version"] = VERSION
+    if exception:
+        a = get_exceptions_array(version)
+        # this check can be removed once all have rerun
+        if "exception" in version:
+            a.append(version["exception"])
+            del version["exception"]
+        a.append(str(exception))
+        version["exceptions"] = a
+    else:
+        version = {"version": VERSION}
+    with open(version_path, "w") as f:
+        json.dump(version, f, indent=4)
 
     logging.info("done")
     return document
