@@ -287,9 +287,7 @@ def check(file_path, document, metadata_dir_path):
     if version and version.get("version") == VERSION:
         return False
 
-    if document["type"].startswith("audio/") or document["type"].startswith(
-        "multipart/appledouble"
-    ):
+    if document["type"].startswith("audio/"):
         return False
 
     return can_wand_open(document["type"])
