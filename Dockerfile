@@ -2,6 +2,20 @@ FROM python:slim-bullseye
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+ENV OPENH264_VERSION=2.5.0
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    bzip2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install Cisco's precompiled libopenh264
+RUN wget -q http://ciscobinary.openh264.org/libopenh264-${OPENH264_VERSION}-linux64.7.so.bz2 \
+    && bunzip2 libopenh264-${OPENH264_VERSION}-linux64.7.so.bz2 \
+    && mv libopenh264-${OPENH264_VERSION}-linux64.7.so /usr/local/lib/libopenh264.so.7 \
+    && ldconfig
+
 # fix libtiff (imei doesn't install the correct version)
 RUN apt-get update && apt-get purge -y \
     libtiff-dev libtiff-tools && \
@@ -28,11 +42,6 @@ RUN wget https://download.osgeo.org/libtiff/tiff-4.7.0.tar.gz && \
     make install && \
     ldconfig
 RUN rm -rf /tmp/tiff-4.7.0* 
-
-# this is missing with imei
-RUN apt-get update && apt-get install -y \
-  libopenh264-6 \
-  && rm -rf /var/lib/apt/lists/*
 
 # run imagemagick easy installer
 RUN t=$(mktemp) && \
